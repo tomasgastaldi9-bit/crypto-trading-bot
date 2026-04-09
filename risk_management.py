@@ -24,7 +24,17 @@ class RiskManager:
         if equity <= 0.0 or entry_price <= 0.0 or stop_distance <= 0.0:
             return 0.0
 
-        risk_budget = equity * self.config.risk_per_trade
+        volatility = abs(entry_price - stop_price) / entry_price
+
+        # Ajuste dinámico
+        if volatility > 0.03:
+            risk_multiplier = 0.5
+        elif volatility > 0.02:
+            risk_multiplier = 0.75
+        else:
+            risk_multiplier = 1.0
+
+        risk_budget = equity * self.config.risk_per_trade * risk_multiplier
         quantity_from_risk = risk_budget / stop_distance
 
         max_notional = equity * self.config.max_leverage
