@@ -17,75 +17,52 @@ def softmax(x):
 
 def run_ensemble_weighted(wrapper, data, top_configs):
     equity_curves = []
-    sharpes = []
+    scores = []
 
     print("\n=== RUNNING CONFIGS ===")
 
     for i, config in enumerate(top_configs):
-        print(f"Running config {i+1} | Sharpe: {config['mean_test']:.3f}")
+        print(
+            f"Running config {i+1} | "
+            f"Sharpe: {config['mean_test']:.3f} | "
+            f"Std: {config['std_test']:.3f} | "
+            f"Overfit: {config['overfit']:.3f}"
+        )
 
         res = wrapper.run(data, config["params"])
 
         equity_curves.append(res["equity_curve"])
-        sharpes.append(config["mean_test"])
+
+        # =========================
+        # 🔥 SCORE MEJORADO
+        # =========================
+        score = (
+            config["mean_test"]
+            - 0.5 * config["std_test"]
+            - 0.7 * config["overfit"]
+        )
+        print(f"Score: {score:.3f}")
+
+        scores.append(score)
 
     # =========================
-    # PESOS BASE (SOFTMAX)
+    # FILTRO NEGATIVOS
     # =========================
-    sharpes = np.array(sharpes)
-    sharpes = np.clip(sharpes, 0.01, None)
-
-    weights = softmax(sharpes)
+    scores = np.array(scores)
+    scores = np.clip(scores, 0.01, None)
 
     # =========================
-    # VOLATILITY SCALING
+    # SOFTMAX
     # =========================
-    vols = []
+    exp_scores = np.exp(scores - np.max(scores))
+    weights = exp_scores / exp_scores.sum()
 
-    for ec in equity_curves:
-        returns = ec["equity"].pct_change().dropna()
-        vol = returns.std() if len(returns) > 0 else 1.0
-        vols.append(vol)
-
-    vols = np.array(vols)
-    inv_vol = 1 / (vols + 1e-8)
-
-    weights = weights * inv_vol
-    weights = weights / weights.sum()
-
-    # =========================
-    # 🔥 CORRELATION-AWARE 🔥
-    # =========================
-    returns_matrix = []
-
-    for ec in equity_curves:
-        r = ec["equity"].pct_change().fillna(0)
-        returns_matrix.append(r.values)
-
-    returns_matrix = np.array(returns_matrix)
-
-    # matriz de correlación
-    corr_matrix = np.corrcoef(returns_matrix)
-
-    # promedio de correlaciones por estrategia (excluyendo self=1)
-    avg_corr = (corr_matrix.sum(axis=1) - 1) / (len(corr_matrix) - 1)
-
-    # score de diversificación (menos correlación = mejor)
-    diversification = 1 - avg_corr
-
-    # evitar valores raros
-    diversification = np.clip(diversification, 0.1, None)
-
-    # aplicar penalización
-    weights = weights * diversification
-    weights = weights / weights.sum()
-
-    print("\n=== FINAL WEIGHTS (CORR ADJUSTED) ===")
+    print("\n=== FINAL WEIGHTS ===")
     for i, w in enumerate(weights):
         print(f"Config {i+1}: {w:.3f}")
 
     # =========================
-    # COMBINAR EQUITY
+    # COMBINAR
     # =========================
     combined = equity_curves[0].copy()
     combined["equity"] *= weights[0]
@@ -105,24 +82,45 @@ def main():
     wrapper = BacktesterWrapper(config)
 
     # =========================
-    # CONFIGS
+    # 🔥 CORRER OPTIMIZER
     # =========================
-    raw_configs = [
-        {"params": {'atr_period': 12, 'rsi_period': 19, 'sl_atr': 1.89, 'ts_atr': 2.44}, "mean_test": 0.516},
-        {"params": {'atr_period': 10, 'rsi_period': 16, 'sl_atr': 2.40, 'ts_atr': 3.30}, "mean_test": 0.606},
-        {"params": {'atr_period': 12, 'rsi_period': 13, 'sl_atr': 2.16, 'ts_atr': 3.36}, "mean_test": 0.317},
-        {"params": {'atr_period': 10, 'rsi_period': 19, 'sl_atr': 2.44, 'ts_atr': 3.13}, "mean_test": 0.399},
-        {"params": {'atr_period': 13, 'rsi_period': 16, 'sl_atr': 2.77, 'ts_atr': 2.20}, "mean_test": 0.259},
-    ]
+    from optimizer import WalkForwardOptimizer
+
+    param_space = {
+        "atr_period": (10, 25),
+        "rsi_period": (12, 20),
+        "sl_atr": (1.8, 3.0),
+        "ts_atr": (2.2, 3.5),
+
+        # MR params
+        "mr_window": (20, 60),
+        "mr_z": (2.0, 3.5),
+        "mr_rsi": (20, 35),
+    }
+
+    optimizer = WalkForwardOptimizer(
+        backtester=wrapper,
+        param_space=param_space,
+        n_trials=50,
+    )
+
+    results = optimizer.optimize(data)
+
+    if results is None:
+        print("No results")
+        return
+
+    optimizer.report(results)
 
     # =========================
-    # SORT + FILTER 🔥
+    # 🔥 USAR TOP CONFIGS REALES
     # =========================
-    raw_configs = sorted(raw_configs, key=lambda x: x["mean_test"], reverse=True)
+    top_configs = [
+        r for r in results
+        if r["mean_test"] > 0.4 and r["std_test"] < 0.6
+    ][:5]
 
-    top_configs = [c for c in raw_configs if c["mean_test"] > 0.3][:6]
-
-    print(f"\nUsing {len(top_configs)} configs after filtering")
+    print(f"\nUsing {len(top_configs)} configs")
 
     equity = run_ensemble_weighted(wrapper, data, top_configs)
 

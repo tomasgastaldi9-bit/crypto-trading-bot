@@ -66,7 +66,7 @@ class WalkForwardOptimizer:
         return splits
 
     # =========================
-    # SINGLE CONFIG EVAL
+    # EVALUATE PARAMS
     # =========================
     def evaluate_params(self, data, params):
         splits = self.generate_splits(len(data))
@@ -91,7 +91,8 @@ class WalkForwardOptimizer:
             drawdowns.append(test_res["max_drawdown"])
 
         if len(test_sharpes) < self.min_folds:
-            return None
+            print(f"⚠️ Only {len(test_sharpes)} valid folds (required {self.min_folds})")
+            print("➡️ Continuing anyway (reduced robustness)")
 
         return {
             "train_sharpes": train_sharpes,
@@ -100,28 +101,24 @@ class WalkForwardOptimizer:
         }
 
     # =========================
-    # ROBUSTNESS SCORING
+    # SCORING
     # =========================
     def compute_score(self, stats):
-        train_sharpes = np.array(stats["train_sharpes"])
-        test_sharpes = np.array(stats["test_sharpes"])
-        drawdowns = np.array(stats["drawdowns"])
+        train = np.array(stats["train_sharpes"])
+        test = np.array(stats["test_sharpes"])
+        dd = np.array(stats["drawdowns"])
 
-        mean_train = np.mean(train_sharpes)
-        mean_test = np.mean(test_sharpes)
-        std_test = np.std(test_sharpes)
+        mean_train = train.mean()
+        mean_test = test.mean()
+        std_test = test.std()
 
-        # Overfit penalty
-        overfit_penalty = max(0, mean_train - mean_test)
+        overfit = max(0, mean_train - mean_test)
+        dd_penalty = dd.mean()
 
-        # Drawdown penalty
-        dd_penalty = np.mean(drawdowns)
-
-        # Robust score
         score = (
             mean_test
             - 0.5 * std_test
-            - 1.2 * overfit_penalty
+            - 1.2 * overfit
             - 0.3 * dd_penalty
         )
 
@@ -130,30 +127,26 @@ class WalkForwardOptimizer:
             "mean_train": mean_train,
             "mean_test": mean_test,
             "std_test": std_test,
-            "overfit": overfit_penalty,
+            "overfit": overfit,
             "avg_dd": dd_penalty,
         }
 
     # =========================
-    # ROBUSTNESS FILTER
+    # FILTER
     # =========================
-    def is_robust(self, metrics):
-        if metrics["mean_test"] < 0.1:
+    def is_robust(self, m):
+        if m["mean_test"] < 0.1:
             return False
-
-        if metrics["std_test"] > 1.5:
+        if m["std_test"] > 1.5:
             return False
-
-        if metrics["overfit"] > 1.5:
+        if m["overfit"] > 1.5:
             return False
-
-        if metrics["avg_dd"] > 0.6:
+        if m["avg_dd"] > 0.6:
             return False
-
         return True
 
     # =========================
-    # MAIN OPTIMIZATION
+    # MAIN
     # =========================
     def optimize(self, data):
         results = []
@@ -163,8 +156,8 @@ class WalkForwardOptimizer:
 
         splits = self.generate_splits(len(data))
         if len(splits) < self.min_folds:
-            print("❌ Not enough data for walk-forward")
-            return None
+            print(f"⚠️ Only {len(splits)} splits available (required {self.min_folds})")
+            print("➡️ Continuing anyway (reduced robustness)")
 
         for i in range(self.n_trials):
             params = self.sample_params()
@@ -180,7 +173,8 @@ class WalkForwardOptimizer:
                 f"[{i}] Train {metrics['mean_train']:.2f} | "
                 f"Test {metrics['mean_test']:.2f} | "
                 f"Std {metrics['std_test']:.2f} | "
-                f"DD {metrics['avg_dd']:.2f}"
+                f"DD {metrics['avg_dd']:.2f} | "
+                f"Overfit {metrics['overfit']:.2f}"
             )
 
             if not self.is_robust(metrics):
@@ -195,7 +189,7 @@ class WalkForwardOptimizer:
             })
 
         if not results:
-            print("\n⚠️ No robust configurations found.")
+            print("\n⚠️ No robust configs")
             return None
 
         results = sorted(results, key=lambda x: x["score"], reverse=True)
@@ -208,13 +202,13 @@ class WalkForwardOptimizer:
     def report(self, results, top_n=5):
         print("\n=== TOP CONFIGURATIONS ===\n")
 
-        for i, res in enumerate(results[:top_n]):
+        for i, r in enumerate(results[:top_n]):
             print(f"Rank {i+1}")
-            print(f"Score: {res['score']:.3f}")
-            print(f"Train Sharpe: {res['mean_train']:.3f}")
-            print(f"Test Sharpe: {res['mean_test']:.3f}")
-            print(f"Stability (std): {res['std_test']:.3f}")
-            print(f"Overfit: {res['overfit']:.3f}")
-            print(f"Avg DD: {res['avg_dd']:.3f}")
-            print(f"Params: {res['params']}")
+            print(f"Score: {r['score']:.3f}")
+            print(f"Train Sharpe: {r['mean_train']:.3f}")
+            print(f"Test Sharpe: {r['mean_test']:.3f}")
+            print(f"Stability: {r['std_test']:.3f}")
+            print(f"Overfit: {r['overfit']:.3f}")
+            print(f"Avg DD: {r['avg_dd']:.3f}")
+            print(f"Params: {r['params']}")
             print("-" * 40)

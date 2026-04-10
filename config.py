@@ -50,12 +50,15 @@ class StrategyConfig:
     # control de overtrading
     cooldown_bars: int = 5
     # mean reversion tuning
-    mean_reversion_rsi_entry = 25
-    mean_reversion_rsi_exit = 55
-    mean_reversion_deviation_pct = 0.02
-    mean_reversion_max_ema_distance_ratio = 0.01
-    mean_reversion_max_slope_ratio = 0.0004
-    mean_reversion_max_atr_expansion = 1.03
+    mean_reversion_rsi_entry: int = 25
+    mean_reversion_rsi_exit: int = 55
+    mean_reversion_deviation_pct: float = 0.02
+    mean_reversion_max_ema_distance_ratio: float = 0.01
+    mean_reversion_max_slope_ratio: float = 0.0004
+    mean_reversion_max_atr_expansion: float = 1.03
+    mr_window: int = 30
+    mr_z: float = 2.5
+    mr_rsi: float = 25
 
 
 @dataclass
