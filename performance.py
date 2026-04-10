@@ -26,7 +26,7 @@ class PerformanceAnalyzer:
         final_equity = float(equity_curve["equity"].iloc[-1])
         total_return = (final_equity / initial_capital) - 1.0
 
-        returns = equity_curve["equity"].pct_change().dropna()
+        returns = equity_curve["equity"].pct_change(fill_method=None).dropna()
         sharpe_ratio = 0.0
         if not returns.empty and returns.std(ddof=0) > 0.0:
             sharpe_ratio = np.sqrt(self.annualization_factor) * (

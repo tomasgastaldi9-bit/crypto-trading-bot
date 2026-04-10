@@ -1,20 +1,57 @@
-from optimizer_runner import BacktesterWrapper
+from optimizer_runner import BacktesterWrapper, build_signal
 from config import DEFAULT_CONFIG
 from data_loader import BinanceDataLoader
 from performance import PerformanceAnalyzer
+from volatility_breakout import VolatilityBreakoutStrategy
+from indicators import add_indicators
+from risk_management import RiskManager
+from backtester import Backtester
 
 import pandas as pd
 import numpy as np
 
 
 # =========================
-# SOFTMAX
+# VOLATILITY BREAKOUT RUN
 # =========================
-def softmax(x):
-    exp_x = np.exp(x - np.max(x))
-    return exp_x / exp_x.sum()
+def run_vb_strategy(wrapper, data):
+    config = wrapper.base_config
+
+    indicator_data = add_indicators(data, config.indicators)
+
+    vb = VolatilityBreakoutStrategy(config.strategy)
+    vb_data = vb.generate_signals(indicator_data.copy())
+
+    vb_data["signal"] = build_signal(vb_data)
+
+    signal_data = vb_data.copy().fillna(0).reset_index(drop=True)
+
+    risk_manager = RiskManager(config.risk)
+
+    backtester = Backtester(
+        risk_manager=risk_manager,
+        strategy_config=config.strategy,
+        risk_config=config.risk,
+        execution_config=config.execution,
+    )
+
+    result = backtester.run(signal_data)
+
+    equity = result.equity_curve.copy()
+
+    # limpiar
+    equity["equity"] = equity["equity"].replace([np.inf, -np.inf], np.nan)
+    equity["equity"] = equity["equity"].ffill().bfill()
+
+    if equity["equity"].isna().all():
+        equity["equity"] = 1.0
+
+    return equity
 
 
+# =========================
+# ENSEMBLE
+# =========================
 def run_ensemble_weighted(wrapper, data, top_configs):
     equity_curves = []
     scores = []
@@ -30,49 +67,107 @@ def run_ensemble_weighted(wrapper, data, top_configs):
         )
 
         res = wrapper.run(data, config["params"])
+        eq = res["equity_curve"].copy()
 
-        equity_curves.append(res["equity_curve"])
+        eq["equity"] = eq["equity"].replace([np.inf, -np.inf], np.nan)
+        eq["equity"] = eq["equity"].ffill().bfill()
 
-        # =========================
-        # 🔥 SCORE MEJORADO
-        # =========================
+        equity_curves.append(eq)
+
         score = (
             config["mean_test"]
-            - 0.5 * config["std_test"]
-            - 0.7 * config["overfit"]
+            - 0.3 * config["std_test"]
+            - 0.4 * config["overfit"]
         )
-        print(f"Score: {score:.3f}")
 
+        print(f"Score: {score:.3f}")
         scores.append(score)
 
     # =========================
-    # FILTRO NEGATIVOS
+    # VOLATILITY BREAKOUT
     # =========================
-    scores = np.array(scores)
-    scores = np.clip(scores, 0.01, None)
+    print("\n=== RUNNING VOLATILITY BREAKOUT ===")
+
+    vb_equity = run_vb_strategy(wrapper, data)
+    equity_curves.append(vb_equity)
+
+    vb_score = np.mean(scores) * 0.5
+    scores.append(vb_score)
 
     # =========================
-    # SOFTMAX
+    # NORMALIZACIÓN PESOS
     # =========================
-    exp_scores = np.exp(scores - np.max(scores))
-    weights = exp_scores / exp_scores.sum()
+    scores = np.array(scores)
+
+    scores = (scores - scores.mean()) / (scores.std() + 1e-8)
+
+    softmax_w = np.exp(scores)
+    softmax_w /= softmax_w.sum()
+
+    uniform_w = np.ones_like(softmax_w) / len(softmax_w)
+
+    alpha = 0.7
+    weights = alpha * softmax_w + (1 - alpha) * uniform_w
 
     print("\n=== FINAL WEIGHTS ===")
     for i, w in enumerate(weights):
-        print(f"Config {i+1}: {w:.3f}")
+        if i < len(top_configs):
+            print(f"Config {i+1}: {w:.3f}")
+        else:
+            print(f"VB Strategy: {w:.3f}")
 
     # =========================
-    # COMBINAR
+    # 🔥 VOL REGIME (CLAVE)
     # =========================
-    combined = equity_curves[0].copy()
-    combined["equity"] *= weights[0]
+    returns = data["close"].pct_change().fillna(0)
+    vol = returns.rolling(50).std()
+    vol_norm = vol / (vol.rolling(200).mean() + 1e-8)
 
-    for i in range(1, len(equity_curves)):
-        combined["equity"] += equity_curves[i]["equity"] * weights[i]
+    vb_regime = (vol_norm > 1.2).astype(float)
+
+    # =========================
+    # ALIGN + COMBINE
+    # =========================
+    aligned_equities = []
+
+    min_len = min(len(eq) for eq in equity_curves)
+
+    for i, eq in enumerate(equity_curves):
+        e = eq.copy().reset_index(drop=True)
+        e = e.iloc[-min_len:]
+
+        e["equity"] = e["equity"].replace([np.inf, -np.inf], np.nan)
+        e["equity"] = e["equity"].ffill().bfill()
+
+        values = e["equity"].values
+
+        # 🔥 aplicar régimen SOLO a VB
+        if i == len(equity_curves) - 1:
+            regime = vb_regime.values[-min_len:]
+            # returns en vez de equity
+            returns = np.diff(values, prepend=values[0]) / values
+
+            # aplicar régimen sobre returns (NO equity)
+            returns = returns * regime
+
+            # reconstruir equity correctamente
+            values = np.cumprod(1 + returns) * values[0]
+
+        aligned_equities.append(values)
+
+    equity_matrix = np.column_stack(aligned_equities)
+
+    combined_equity = np.dot(equity_matrix, weights)
+
+    combined = equity_curves[0].copy().reset_index(drop=True).iloc[-min_len:]
+    combined["equity"] = combined_equity
 
     return combined
 
 
+# =========================
+# MAIN
+# =========================
 def main():
     config = DEFAULT_CONFIG
 
@@ -81,9 +176,6 @@ def main():
 
     wrapper = BacktesterWrapper(config)
 
-    # =========================
-    # 🔥 CORRER OPTIMIZER
-    # =========================
     from optimizer import WalkForwardOptimizer
 
     param_space = {
@@ -91,8 +183,6 @@ def main():
         "rsi_period": (12, 20),
         "sl_atr": (1.8, 3.0),
         "ts_atr": (2.2, 3.5),
-
-        # MR params
         "mr_window": (20, 60),
         "mr_z": (2.0, 3.5),
         "mr_rsi": (20, 35),
@@ -112,12 +202,9 @@ def main():
 
     optimizer.report(results)
 
-    # =========================
-    # 🔥 USAR TOP CONFIGS REALES
-    # =========================
     top_configs = [
         r for r in results
-        if r["mean_test"] > 0.4 and r["std_test"] < 0.6
+        if r["mean_test"] > 0.45
     ][:5]
 
     print(f"\nUsing {len(top_configs)} configs")
