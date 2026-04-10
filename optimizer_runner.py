@@ -129,6 +129,30 @@ class BacktesterWrapper:
 
         result = backtester.run(signal_data)
 
+        equity = result.equity_curve.copy()
+
+        # =========================
+        # VOLATILITY TARGETING 🔥
+        # =========================
+        returns = equity["equity"].pct_change().fillna(0)
+
+        rolling_vol = returns.rolling(24).std()  # 24h aprox
+
+        target_vol = 0.015  # 🔥 podés optimizar esto después
+
+        scaling = target_vol / (rolling_vol + 1e-8)
+
+        # limitar leverage extremo
+        scaling = scaling.clip(0.5, 1.2)
+
+        # aplicar scaling
+        scaled_returns = returns * scaling
+
+        equity["equity"] = (1 + scaled_returns).cumprod() * equity["equity"].iloc[0]
+
+        # reemplazar equity
+        result.equity_curve = equity
+
         # =========================
         # PERFORMANCE
         # =========================
