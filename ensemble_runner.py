@@ -95,7 +95,7 @@ def run_ensemble_weighted(wrapper, data, top_configs):
     scores.append(vb_score)
 
     # =========================
-    # NORMALIZACIÓN PESOS
+    # BASE WEIGHTS
     # =========================
     scores = np.array(scores)
 
@@ -107,30 +107,30 @@ def run_ensemble_weighted(wrapper, data, top_configs):
     uniform_w = np.ones_like(softmax_w) / len(softmax_w)
 
     alpha = 0.7
-    weights = alpha * softmax_w + (1 - alpha) * uniform_w
+    base_weights = alpha * softmax_w + (1 - alpha) * uniform_w
 
-    print("\n=== FINAL WEIGHTS ===")
-    for i, w in enumerate(weights):
+    print("\n=== BASE WEIGHTS ===")
+    for i, w in enumerate(base_weights):
         if i < len(top_configs):
             print(f"Config {i+1}: {w:.3f}")
         else:
             print(f"VB Strategy: {w:.3f}")
 
     # =========================
-    # 🔥 VOL REGIME (CLAVE)
+    # VOL REGIME
     # =========================
-    returns = data["close"].pct_change().fillna(0)
-    vol = returns.rolling(50).std()
+    returns_price = data["close"].pct_change().fillna(0)
+    vol = returns_price.rolling(50).std()
     vol_norm = vol / (vol.rolling(200).mean() + 1e-8)
 
     vb_regime = (vol_norm > 1.2).astype(float)
 
     # =========================
-    # ALIGN + COMBINE
+    # ALIGN SERIES
     # =========================
-    aligned_equities = []
-
     min_len = min(len(eq) for eq in equity_curves)
+
+    aligned_equities = []
 
     for i, eq in enumerate(equity_curves):
         e = eq.copy().reset_index(drop=True)
@@ -141,23 +141,114 @@ def run_ensemble_weighted(wrapper, data, top_configs):
 
         values = e["equity"].values
 
-        # 🔥 aplicar régimen SOLO a VB
+        # aplicar regime a VB
         if i == len(equity_curves) - 1:
             regime = vb_regime.values[-min_len:]
-            # returns en vez de equity
-            returns = np.diff(values, prepend=values[0]) / values
 
-            # aplicar régimen sobre returns (NO equity)
-            returns = returns * regime
-
-            # reconstruir equity correctamente
-            values = np.cumprod(1 + returns) * values[0]
+            rets = np.diff(values, prepend=values[0]) / (values + 1e-8)
+            rets = rets * regime
+            values = np.cumprod(1 + rets) * values[0]
 
         aligned_equities.append(values)
 
     equity_matrix = np.column_stack(aligned_equities)
 
-    combined_equity = np.dot(equity_matrix, weights)
+    # =========================
+    # RETURNS MATRIX
+    # =========================
+    returns_matrix = np.diff(equity_matrix, axis=0) / (equity_matrix[:-1] + 1e-8)
+
+    # =========================
+    # 🔥 DYNAMIC + CORRELATION
+    # =========================
+    window = 80
+    alpha_dyn = 0.6
+    beta = 0.2
+    corr_penalty = 0.5   # 🔥 intensidad penalización
+
+    dynamic_weights = []
+    prev_w = base_weights.copy()
+
+    for i in range(len(returns_matrix)):
+
+        if i < window:
+            dynamic_weights.append(base_weights)
+            continue
+
+        window_returns = returns_matrix[i - window:i]
+
+        # =========================
+        # SHARPE
+        # =========================
+        sharpe = window_returns.mean(axis=0) / (window_returns.std(axis=0) + 1e-8)
+        sharpe = np.clip(sharpe, -3, 3)
+
+        # =========================
+        # CORRELATION ROBUSTA 🔥
+        # =========================
+        stds = window_returns.std(axis=0)
+
+        # evitar columnas sin varianza
+        valid = stds > 1e-6
+
+        if valid.sum() < 2:
+            penalty = np.ones_like(sharpe)
+        else:
+            safe_returns = window_returns[:, valid]
+
+            corr_matrix = np.corrcoef(safe_returns.T)
+
+            # limpiar NaNs
+            corr_matrix = np.nan_to_num(corr_matrix, nan=0.0)
+
+            avg_corr_valid = np.mean(
+                np.abs(corr_matrix - np.eye(len(corr_matrix))),
+                axis=1
+            )
+
+            penalty = np.ones_like(sharpe)
+            penalty[valid] = 1 - corr_penalty * avg_corr_valid
+            penalty = np.clip(penalty, 0.5, 1.0)
+
+        sharpe_adj = sharpe * penalty
+
+        # =========================
+        # WEIGHTS
+        # =========================
+        w_dyn = np.exp(sharpe_adj)
+        w_dyn /= w_dyn.sum()
+
+        # mezcla con base
+        w = alpha_dyn * w_dyn + (1 - alpha_dyn) * base_weights
+
+        # smoothing temporal
+        w = beta * w + (1 - beta) * prev_w
+
+        prev_w = w
+        dynamic_weights.append(w)
+
+    dynamic_weights = np.array(dynamic_weights)
+
+    print("\n=== FINAL WEIGHTS (LAST STEP) ===")
+    for i, w in enumerate(dynamic_weights[-1]):
+        if i < len(top_configs):
+            print(f"Config {i+1}: {w:.3f}")
+        else:
+            print(f"VB Strategy: {w:.3f}")
+
+    # =========================
+    # COMBINAR
+    # =========================
+    combined_equity = [equity_matrix[0, 0]]
+
+    for i in range(1, len(equity_matrix)):
+        w = dynamic_weights[i - 1]
+        ret = returns_matrix[i - 1]
+
+        portfolio_ret = np.dot(ret, w)
+        combined_equity.append(combined_equity[-1] * (1 + portfolio_ret))
+
+    combined_equity = np.array(combined_equity)
 
     combined = equity_curves[0].copy().reset_index(drop=True).iloc[-min_len:]
     combined["equity"] = combined_equity
