@@ -24,27 +24,41 @@ class RiskManager:
         if equity <= 0.0 or entry_price <= 0.0 or stop_distance <= 0.0:
             return 0.0
 
+        # =========================
+        # 🔥 VOLATILITY-BASED SIZING
+        # =========================
         volatility = abs(entry_price - stop_price) / entry_price
 
-        # Ajuste dinámico
-        if volatility > 0.03:
-            risk_multiplier = 0.5
-        elif volatility > 0.02:
-            risk_multiplier = 0.75
-        else:
-            risk_multiplier = 1.0
+        vol_target = 0.02
+        vol_factor = vol_target / (volatility + 1e-8)
 
-        risk_budget = equity * self.config.risk_per_trade * risk_multiplier
+        # límites para no descontrolar
+        vol_factor = max(0.5, min(vol_factor, 1.5))
+
+        risk_budget = equity * self.config.risk_per_trade * vol_factor
+
         quantity_from_risk = risk_budget / stop_distance
 
+        # =========================
+        # 🔥 LEVERAGE CONSTRAINT
+        # =========================
         max_notional = equity * self.config.max_leverage
         available_notional = max(max_notional - current_open_notional, 0.0)
-        quantity_from_notional = available_notional / entry_price if entry_price > 0.0 else 0.0
 
+        quantity_from_notional = (
+            available_notional / entry_price if entry_price > 0.0 else 0.0
+        )
+
+        # =========================
+        # FINAL SIZE
+        # =========================
         raw_quantity = min(quantity_from_risk, quantity_from_notional)
+
         quantity = self._round_down(raw_quantity)
+
         if quantity < self.config.min_quantity:
             return 0.0
+
         return quantity
 
     def can_open_position(self, open_positions: int) -> bool:

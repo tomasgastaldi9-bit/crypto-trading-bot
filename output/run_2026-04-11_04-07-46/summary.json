@@ -1,0 +1,10 @@
+{
+  "initial_capital": 100000.0,
+  "final_equity": 112075.27405760277,
+  "total_return": 0.1207527405760278,
+  "sharpe_ratio": 0.6519664614714831,
+  "max_drawdown": -0.05222378119607196,
+  "win_rate": 0.4426229508196721,
+  "profit_factor": 1.5546425701111284,
+  "total_trades": 122.0
+}

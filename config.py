@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
+from datetime import datetime
 
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -81,18 +82,22 @@ class ExecutionConfig:
     slippage_rate: float = 0.0002
     annualization_factor: int = 24 * 365
     close_positions_at_end: bool = True
+    target_volatility: float = 0.02
+    volatility_window: int = 24
 
 
 @dataclass
 class OutputConfig:
-    """Output locations and reporting preferences."""
-
-    output_dir: Path = field(default_factory=lambda: BASE_DIR / "outputs")
-    trade_log_filename: str = "trade_log.csv"
+    base_dir: Path = Path("output")
+    trade_log_filename: str = "trades.csv"
     equity_curve_filename: str = "equity_curve.csv"
-    summary_filename: str = "summary_report.json"
-    equity_plot_filename: str = "equity_curve.png"
-    print_summary: bool = True
+    summary_filename: str = "summary.json"
+    equity_plot_filename: str = "equity_plot.png"
+
+    @property
+    def output_dir(self) -> Path:
+        timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+        return self.base_dir / f"run_{timestamp}"
 
 
 @dataclass

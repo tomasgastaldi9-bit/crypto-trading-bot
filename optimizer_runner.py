@@ -11,6 +11,7 @@ from volatility_breakout import VolatilityBreakoutStrategy
 
 from copy import deepcopy
 import numpy as np
+import pandas as pd
 
 
 # =========================
@@ -82,7 +83,7 @@ class BacktesterWrapper:
         mr_data["signal"] = build_signal(mr_data)
 
         # =========================
-        # CONVICTION WEIGHTING
+        # CONVICTION
         # =========================
         trend_strength = indicator_data["close"].pct_change(20).abs()
 
@@ -95,30 +96,62 @@ class BacktesterWrapper:
         mr_weight = np.clip(mr_strength.fillna(0), 0, 1)
 
         # =========================
-        # 🔥 TREND REGIME (CLAVE)
+        # 🔥 REGIME DETECTION (MEJORADO)
         # =========================
-        trend_regime_strength = indicator_data["close"].pct_change(50).abs()
+        returns_50 = indicator_data["close"].pct_change(50).abs()
+        volatility = indicator_data["close"].pct_change().rolling(50).std()
 
-        trend_regime = trend_regime_strength / (trend_regime_strength.rolling(100).mean() + 1e-8)
-        trend_regime = np.clip(trend_regime, 0, 2)
+        trend_score = returns_50 / (volatility + 1e-8)
+        trend_score = trend_score.fillna(0)
 
-        # MR se apaga en tendencia fuerte
-        mr_regime = 1 - np.clip(trend_regime - 1, 0, 1)
-        mr_regime = mr_regime.fillna(1)
+        strong_trend = trend_score > 1.2
+        sideways = trend_score < 0.8
+
+        # dynamic weights
+        trend_w = np.where(strong_trend, 1.0, 0.4)
+        mr_w = np.where(sideways, 1.0, 0.3)
+
+        trend_w = pd.Series(trend_w).rolling(10).mean().fillna(0.5)
+        mr_w = pd.Series(mr_w).rolling(10).mean().fillna(0.5)
 
         # =========================
-        # COMBINACIÓN INTELIGENTE
+        # 🔥 COMBINACIÓN FINAL (LONG + SHORT)
         # =========================
         combined_signal = (
-            trend_data["signal"] * trend_weight +
-            mr_data["signal"] * mr_weight * mr_regime
+            trend_data["signal"] * trend_weight * trend_w +
+            mr_data["signal"] * mr_weight * mr_w
         )
 
         combined_signal = np.clip(combined_signal, -1, 1)
 
+        # =========================
+        # 🔥 ENTRY / EXIT LONG + SHORT
+        # =========================
         signal_data = trend_data.copy()
-        signal_data["signal"] = combined_signal
-        signal_data = signal_data.fillna(0).reset_index(drop=True)
+
+        # LONG
+        signal_data["entry_long"] = (
+            (combined_signal > 0.5) &
+            (combined_signal.shift(1) <= 0.5)
+        )
+
+        signal_data["exit_long"] = (
+            (combined_signal < 0.2) &
+            (combined_signal.shift(1) >= 0.2)
+        )
+
+        # SHORT
+        signal_data["entry_short"] = (
+            (combined_signal < -0.5) &
+            (combined_signal.shift(1) >= -0.5)
+        )
+
+        signal_data["exit_short"] = (
+            (combined_signal > -0.2) &
+            (combined_signal.shift(1) <= -0.2)
+        )
+
+        signal_data = signal_data.fillna(False).reset_index(drop=True)
 
         # =========================
         # BACKTEST
@@ -137,7 +170,7 @@ class BacktesterWrapper:
         equity = result.equity_curve.copy()
 
         # =========================
-        # VOLATILITY TARGETING
+        # VOL TARGET
         # =========================
         returns = equity["equity"].pct_change().fillna(0)
 
@@ -167,8 +200,8 @@ class BacktesterWrapper:
             "sharpe": summary["sharpe_ratio"],
             "max_drawdown": summary["max_drawdown"],
             "equity_curve": result.equity_curve,
+            "trades": result.trades,
         }
-        
         
 def run_vb_strategy(wrapper, data):
     config = wrapper.base_config
@@ -194,7 +227,10 @@ def run_vb_strategy(wrapper, data):
 
     result = backtester.run(signal_data)
 
-    return result.equity_curve
+    return {
+    "equity_curve": result.equity_curve,
+    "trades": result.trades
+    }
 
 
 def main():
