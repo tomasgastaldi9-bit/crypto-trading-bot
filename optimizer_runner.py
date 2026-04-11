@@ -11,13 +11,13 @@ from volatility_breakout import VolatilityBreakoutStrategy
 
 from copy import deepcopy
 import numpy as np
+import json
 
 
 # =========================
-# BUILD SIGNAL (entry/exit → position)
+# BUILD SIGNAL
 # =========================
 def build_signal(df):
-    # fallback si no existen señales
     if "entry_signal" not in df.columns or "exit_signal" not in df.columns:
         return np.zeros(len(df))
 
@@ -42,6 +42,9 @@ def build_signal(df):
     return signal
 
 
+# =========================
+# BACKTESTER WRAPPER
+# =========================
 class BacktesterWrapper:
     def __init__(self, base_config):
         self.base_config = base_config
@@ -49,9 +52,6 @@ class BacktesterWrapper:
     def run(self, data, params):
         config = deepcopy(self.base_config)
 
-        # =========================
-        # PARAMS
-        # =========================
         config.indicators.atr_period = int(params["atr_period"])
         config.indicators.rsi_period = int(params["rsi_period"])
         config.strategy.stop_loss_atr_multiple = params["sl_atr"]
@@ -61,29 +61,17 @@ class BacktesterWrapper:
         config.strategy.mr_z = params["mr_z"]
         config.strategy.mr_rsi = params["mr_rsi"]
 
-        # =========================
-        # INDICATORS
-        # =========================
         indicator_data = add_indicators(data, config.indicators)
 
-        # =========================
-        # STRATEGIES
-        # =========================
         trend_strategy = TrendMomentumStrategy(config.strategy)
         mr_strategy = MeanReversionStrategy(config.strategy)
 
         trend_data = trend_strategy.generate_signals(indicator_data.copy())
         mr_data = mr_strategy.generate_signals(indicator_data.copy())
 
-        # =========================
-        # BUILD SIGNALS
-        # =========================
         trend_data["signal"] = build_signal(trend_data)
         mr_data["signal"] = build_signal(mr_data)
 
-        # =========================
-        # CONVICTION WEIGHTING
-        # =========================
         trend_strength = indicator_data["close"].pct_change(20).abs()
 
         if "zscore" in mr_data.columns:
@@ -94,21 +82,14 @@ class BacktesterWrapper:
         trend_weight = np.clip(trend_strength.fillna(0), 0, 1)
         mr_weight = np.clip(mr_strength.fillna(0), 0, 1)
 
-        # =========================
-        # 🔥 TREND REGIME (CLAVE)
-        # =========================
         trend_regime_strength = indicator_data["close"].pct_change(50).abs()
 
         trend_regime = trend_regime_strength / (trend_regime_strength.rolling(100).mean() + 1e-8)
         trend_regime = np.clip(trend_regime, 0, 2)
 
-        # MR se apaga en tendencia fuerte
         mr_regime = 1 - np.clip(trend_regime - 1, 0, 1)
         mr_regime = mr_regime.fillna(1)
 
-        # =========================
-        # COMBINACIÓN INTELIGENTE
-        # =========================
         combined_signal = (
             trend_data["signal"] * trend_weight +
             mr_data["signal"] * mr_weight * mr_regime
@@ -120,9 +101,6 @@ class BacktesterWrapper:
         signal_data["signal"] = combined_signal
         signal_data = signal_data.fillna(0).reset_index(drop=True)
 
-        # =========================
-        # BACKTEST
-        # =========================
         risk_manager = RiskManager(config.risk)
 
         backtester = Backtester(
@@ -136,9 +114,6 @@ class BacktesterWrapper:
 
         equity = result.equity_curve.copy()
 
-        # =========================
-        # VOLATILITY TARGETING
-        # =========================
         returns = equity["equity"].pct_change().fillna(0)
 
         rolling_vol = returns.rolling(24).std()
@@ -152,9 +127,6 @@ class BacktesterWrapper:
 
         result.equity_curve = equity
 
-        # =========================
-        # PERFORMANCE
-        # =========================
         analyzer = PerformanceAnalyzer(config.execution.annualization_factor)
 
         summary = analyzer.summarize(
@@ -168,35 +140,57 @@ class BacktesterWrapper:
             "max_drawdown": summary["max_drawdown"],
             "equity_curve": result.equity_curve,
         }
-        
-        
-def run_vb_strategy(wrapper, data):
-    config = wrapper.base_config
-
-    indicator_data = add_indicators(data, config.indicators)
-
-    vb = VolatilityBreakoutStrategy(config.strategy)
-    vb_data = vb.generate_signals(indicator_data.copy())
-
-    vb_data["signal"] = build_signal(vb_data)
-
-    signal_data = vb_data.copy()
-    signal_data = signal_data.fillna(0).reset_index(drop=True)
-
-    risk_manager = RiskManager(config.risk)
-
-    backtester = Backtester(
-        risk_manager=risk_manager,
-        strategy_config=config.strategy,
-        risk_config=config.risk,
-        execution_config=config.execution,
-    )
-
-    result = backtester.run(signal_data)
-
-    return result.equity_curve
 
 
+# =========================
+# 🔥 DIVERSITY FILTER
+# =========================
+def compute_equity_returns(wrapper, data, params):
+    res = wrapper.run(data, params)
+    eq = res["equity_curve"]
+    returns = eq["equity"].pct_change().fillna(0).values
+    return returns
+
+
+def select_diverse_configs(wrapper, data, configs, max_configs=5, corr_threshold=0.95):
+    selected = []
+    selected_returns = []
+
+    print("\n=== APPLYING DIVERSITY FILTER ===")
+
+    for config in configs:
+        params = config["params"]
+
+        r = compute_equity_returns(wrapper, data, params)
+
+        if len(selected_returns) == 0:
+            selected.append(config)
+            selected_returns.append(r)
+            continue
+
+        correlations = [
+            np.corrcoef(r, sr)[0, 1] for sr in selected_returns
+        ]
+
+        max_corr = np.max(correlations)
+
+        print(f"Candidate corr: {max_corr:.3f}")
+
+        if max_corr < corr_threshold:
+            selected.append(config)
+            selected_returns.append(r)
+
+        if len(selected) >= max_configs:
+            break
+
+    print(f"Selected {len(selected)} diverse configs")
+
+    return selected
+
+
+# =========================
+# MAIN
+# =========================
 def main():
     config = DEFAULT_CONFIG
 
@@ -205,23 +199,16 @@ def main():
 
     wrapper = BacktesterWrapper(config)
 
-    # =========================
-    # PARAM SPACE
-    # =========================
     param_space = {
         "atr_period": (10, 25),
         "rsi_period": (12, 20),
         "sl_atr": (1.8, 3.0),
         "ts_atr": (2.2, 3.5),
-
-        # 🔥 ESTO ES LO QUE TE FALTABA
         "mr_window": (25, 45),
         "mr_z": (2.0, 2.8),
         "mr_rsi": (22, 30),
     }
-    # =========================
-    # OPTIMIZER
-    # =========================
+
     optimizer = WalkForwardOptimizer(
         backtester=wrapper,
         param_space=param_space,
@@ -236,6 +223,31 @@ def main():
 
     if results:
         optimizer.report(results)
+
+        # =========================
+        # CLEAN RESULTS
+        # =========================
+        clean_results = []
+
+        for r in results:
+            clean_results.append({
+                "params": r["params"],
+                "mean_test": float(np.mean(r["test_sharpes"])) if "test_sharpes" in r else r.get("mean_test", 0),
+                "std_test": float(np.std(r["test_sharpes"])) if "test_sharpes" in r else r.get("std_test", 0),
+                "overfit": float(r.get("overfit", 0))
+            })
+
+        # ordenar
+        clean_results = sorted(clean_results, key=lambda x: x["mean_test"], reverse=True)
+
+        # 🔥 DIVERSITY FILTER
+        diverse_configs = select_diverse_configs(wrapper, data, clean_results)
+
+        # =========================
+        # SAVE JSON
+        # =========================
+        with open("top_configs.json", "w") as f:
+            json.dump(diverse_configs, f, indent=2)
 
 
 if __name__ == "__main__":
