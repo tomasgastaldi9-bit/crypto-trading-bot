@@ -54,9 +54,9 @@ class WalkForwardOptimizer:
         backtester,
         param_space,
         n_trials=120,
-        train_size=0.6,
+        train_size=0.5,
         test_size=0.2,
-        step_size=0.2,
+        step_size=0.15,
         min_folds=2,  # 🔥 más flexible
         random_seed=42,
     ):

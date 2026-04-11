@@ -300,7 +300,7 @@ def main():
 
     optimizer.report(results)
 
-    top_configs = results[:3]
+    top_configs = results[:1]
 
     print(f"\nUsing {len(top_configs)} configs")
 
