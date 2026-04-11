@@ -4,6 +4,7 @@ from data_loader import BinanceDataLoader
 from performance import PerformanceAnalyzer
 from volatility_breakout import VolatilityBreakoutStrategy
 from range_strategy import RangeStrategy
+from volatility_mr_strategy import VolatilityMeanReversionStrategy
 from indicators import add_indicators
 from risk_management import RiskManager
 from backtester import Backtester
@@ -48,15 +49,59 @@ def combine_equities_return_based(equity_curves, weights):
     return pd.DataFrame({"equity": equity})
 
 
-def apply_vol_targeting(equity, target_vol=0.15, window=50):
+# =========================
+# 🔥 PERFORMANCE WEIGHTS
+# =========================
+def compute_performance_weights(equity_curves, lookback=200):
+    perf_scores = []
+
+    for eq in equity_curves:
+        returns = eq["equity"].pct_change(fill_method=None).fillna(0)
+        recent = returns.iloc[-lookback:]
+
+        mean_ret = recent.mean()
+        std_ret = recent.std() + 1e-8
+
+        sharpe_like = mean_ret / std_ret
+        perf_scores.append(sharpe_like)
+
+    perf_scores = np.array(perf_scores)
+
+    perf_scores = (perf_scores - perf_scores.mean()) / (perf_scores.std() + 1e-8)
+
+    weights = np.exp(perf_scores)
+    weights /= weights.sum()
+
+    return weights
+
+
+def apply_vol_targeting(equity, target_vol=0.18, window=50):
     returns = equity["equity"].pct_change(fill_method=None).fillna(0)
 
+    # VOL TARGETING
     realized_vol = returns.rolling(window).std()
-    scaling = target_vol / (realized_vol + 1e-8)
+    vol_scaling = target_vol / (realized_vol + 1e-8)
+    vol_scaling = vol_scaling.clip(0.7, 1.8)
 
-    scaling = scaling.clip(0.5, 2.0)
+    # DRAWDOWN CONTROL
+    eq = equity["equity"]
+    rolling_max = eq.cummax()
+    drawdown = (eq - rolling_max) / (rolling_max + 1e-8)
 
-    scaled_returns = returns * scaling.shift(1).fillna(1)
+    dd_scaling = 1 + 0.5 * drawdown
+    dd_scaling = dd_scaling.clip(0.7, 1.0)
+
+    # VOL REGIME
+    vol_long = realized_vol.rolling(100).mean()
+    vol_regime = realized_vol / (vol_long + 1e-8)
+
+    regime_scaling = np.where(vol_regime > 1.3, 0.85, 1.05)
+
+    # FINAL
+    final_scaling = vol_scaling * dd_scaling * regime_scaling
+    final_scaling = np.clip(final_scaling, 0.5, 2.0)
+
+    scaled_returns = returns * pd.Series(final_scaling, index=returns.index).shift(1).fillna(1)
 
     new_equity = equity["equity"].iloc[0] * np.cumprod(1 + scaled_returns)
 
@@ -80,59 +125,24 @@ def compute_correlation_penalty(aligned_equities):
 
 
 # =========================
-# VOLATILITY BREAKOUT
+# STRATEGY RUNNERS
 # =========================
-def run_vb_strategy(wrapper, data):
+def run_strategy(wrapper, data, strategy_class):
     config = wrapper.base_config
-
     indicator_data = add_indicators(data, config.indicators)
 
-    vb = VolatilityBreakoutStrategy(config.strategy)
-    vb_data = vb.generate_signals(indicator_data.copy())
+    strat = strategy_class(config.strategy)
+    strat_data = strat.generate_signals(indicator_data.copy())
+    strat_data["signal"] = build_signal(strat_data)
 
-    vb_data["signal"] = build_signal(vb_data)
+    signal_data = strat_data.copy().fillna(0).reset_index(drop=True)
 
-    signal_data = vb_data.copy().fillna(0).reset_index(drop=True)
-
-    risk_manager = RiskManager(config.risk)
-
-    backtester = Backtester(
-        risk_manager=risk_manager,
-        strategy_config=config.strategy,
-        risk_config=config.risk,
-        execution_config=config.execution,
-    )
-
-    result = backtester.run(signal_data)
-
-    return clean_equity(result.equity_curve.copy())
-
-
-# =========================
-# 🔥 RANGE STRATEGY (NUEVO EDGE)
-# =========================
-def run_range_strategy(wrapper, data):
-    config = wrapper.base_config
-
-    indicator_data = add_indicators(data, config.indicators)
-
-    rs = RangeStrategy(config.strategy)
-    rs_data = rs.generate_signals(indicator_data.copy())
-
-    rs_data["signal"] = build_signal(rs_data)
-
-    signal_data = rs_data.copy().fillna(0).reset_index(drop=True)
-
-    risk_manager = RiskManager(config.risk)
-
-    backtester = Backtester(
-        risk_manager=risk_manager,
-        strategy_config=config.strategy,
-        risk_config=config.risk,
-        execution_config=config.execution,
-    )
-
-    result = backtester.run(signal_data)
+    result = Backtester(
+        RiskManager(config.risk),
+        config.strategy,
+        config.risk,
+        config.execution
+    ).run(signal_data)
 
     return clean_equity(result.equity_curve.copy())
 
@@ -169,36 +179,30 @@ def run_ensemble_weighted(wrapper, data, top_configs):
         print(f"Score: {score:.3f} | Turnover: {turnover:.5f}")
         scores.append(score)
 
-    # =========================
-    # VOL BREAKOUT
-    # =========================
+    # VB
     print("\n=== RUNNING VB ===")
-    vb_eq = run_vb_strategy(wrapper, data)
+    vb_eq = run_strategy(wrapper, data, VolatilityBreakoutStrategy)
     equity_curves.append(vb_eq)
     scores.append(np.mean(scores))
 
-    # =========================
-    # 🔥 RANGE STRATEGY
-    # =========================
+    # RANGE
     print("\n=== RUNNING RANGE STRATEGY ===")
-    rs_eq = run_range_strategy(wrapper, data)
+    rs_eq = run_strategy(wrapper, data, RangeStrategy)
     equity_curves.append(rs_eq)
+    scores.append(np.mean(scores) * 0.5)
 
-    rs_score = np.mean(scores) * 0.5  # 🔥 bajar influencia del range
-    scores.append(rs_score)
+    # VOL MR
+    print("\n=== RUNNING VOL MR STRATEGY ===")
+    vmr_eq = run_strategy(wrapper, data, VolatilityMeanReversionStrategy)
+    equity_curves.append(vmr_eq)
+    scores.append(np.mean(scores) * 0.05)
 
-    # =========================
     # ALIGN
-    # =========================
     min_len = min(len(eq) for eq in equity_curves)
-
-    aligned = []
-    for eq in equity_curves:
-        e = eq.copy().reset_index(drop=True).iloc[-min_len:]
-        aligned.append(clean_equity(e))
+    aligned = [clean_equity(eq.reset_index(drop=True).iloc[-min_len:]) for eq in equity_curves]
 
     # =========================
-    # CORRELATION
+    # WEIGHTS
     # =========================
     penalty = compute_correlation_penalty(aligned)
 
@@ -212,8 +216,19 @@ def run_ensemble_weighted(wrapper, data, top_configs):
 
     uniform_w = np.ones_like(softmax_w) / len(softmax_w)
 
-    alpha = 0.7
-    weights = alpha * softmax_w + (1 - alpha) * uniform_w
+    # 🔥 PERFORMANCE WEIGHTS
+    perf_w = compute_performance_weights(aligned, lookback=200)
+
+    # limitar impacto
+    perf_w = np.clip(perf_w, 0.05, 0.5)
+
+    # 🔥 penalizar VOL_MR
+    perf_w[-1] *= 0.15
+
+    # renormalizar
+    perf_w = perf_w / perf_w.sum()
+
+    weights = 0.6 * softmax_w + 0.3 * uniform_w + 0.1 * perf_w
 
     print("\n=== WEIGHTS (FULL SYSTEM) ===")
     for i, w in enumerate(weights):
@@ -221,15 +236,13 @@ def run_ensemble_weighted(wrapper, data, top_configs):
             name = f"Config {i+1}"
         elif i == len(top_configs):
             name = "VB"
-        else:
+        elif i == len(top_configs) + 1:
             name = "RANGE"
+        else:
+            name = "VOL_MR"
         print(f"{name}: {w:.3f} | Penalty: {penalty[i]:.3f}")
 
-    # =========================
-    # ENSEMBLE
-    # =========================
     portfolio = combine_equities_return_based(aligned, weights)
-
     portfolio = apply_vol_targeting(portfolio)
 
     return portfolio
@@ -242,9 +255,7 @@ if __name__ == "__main__":
     print("=== LOADING DATA ===")
 
     config = DEFAULT_CONFIG
-
-    loader = BinanceDataLoader(config.binance)
-    data = loader.load_klines()
+    data = BinanceDataLoader(config.binance).load_klines()
 
     print(f"Data loaded: {len(data)} rows")
 
@@ -256,10 +267,7 @@ if __name__ == "__main__":
         configs = json.load(f)
 
     configs = sorted(configs, key=lambda x: x["mean_test"], reverse=True)
-    configs = [
-        c for c in configs
-        if c["overfit"] < 0.8 and c["mean_test"] > 0.3
-    ]
+    configs = [c for c in configs if c["overfit"] < 0.8 and c["mean_test"] > 0.3]
 
     top_configs = configs[:5]
 
@@ -272,9 +280,7 @@ if __name__ == "__main__":
 
     portfolio = run_ensemble_weighted(wrapper, data, top_configs)
 
-    analyzer = PerformanceAnalyzer(annualization_factor=365*24)
-
-    summary = analyzer.summarize(
+    summary = PerformanceAnalyzer(annualization_factor=365*24).summarize(
         equity_curve=portfolio,
         trades=pd.DataFrame(),
         initial_capital=config.risk.initial_capital,

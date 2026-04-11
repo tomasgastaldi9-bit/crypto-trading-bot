@@ -13,12 +13,12 @@ class VolatilityBreakoutStrategy:
         atr_ma = atr.rolling(20).mean()
 
         # =========================
-        # 🔥 VOL EXPANSION REAL
+        # 🔥 VOL EXPANSION (mejor calibrado)
         # =========================
-        vol_expansion = (atr / (atr_ma + 1e-8)) > 1.3
+        vol_expansion = (atr / (atr_ma + 1e-8)) > 1.2
 
         # =========================
-        # 🔥 TREND FILTER
+        # 🔥 TREND
         # =========================
         trend = data["ema_fast"] > data["ema_slow"]
 
@@ -30,25 +30,40 @@ class VolatilityBreakoutStrategy:
         breakout = data["close"] > high_break.shift(1)
 
         # =========================
-        # 🔥 MOMENTUM CONFIRMATION
+        # 🔥 CONFIRMACIÓN (NUEVO)
+        # =========================
+        continuation = data["close"] > data["close"].shift(1)
+
+        # =========================
+        # 🔥 ANTI-WICK (MUY IMPORTANTE)
+        # =========================
+        candle_range = data["high"] - data["low"]
+        body = (data["close"] - data["open"]).abs()
+
+        strong_candle = (body / (candle_range + 1e-8)) > 0.6
+
+        # =========================
+        # 🔥 MOMENTUM
         # =========================
         momentum = data["rsi"] > 55
 
         # =========================
-        # ENTRY (SOLO LONG)
+        # ENTRY (MEJORADO)
         # =========================
         data["entry_signal"] = (
             breakout
+            & continuation
+            & strong_candle
             & vol_expansion
             & trend
             & momentum
         )
 
         # =========================
-        # 🔥 EXIT INTELIGENTE
+        # 🔥 EXIT MEJORADO
         # =========================
         data["exit_signal"] = (
-            (data["rsi"] < 50)
+            (data["rsi"] < 48)  # sale antes
             | (data["close"] < data["ema_fast"])
         )
 
