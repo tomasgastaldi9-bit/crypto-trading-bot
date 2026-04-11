@@ -6,3 +6,4 @@ data_cache/
 outputs/
 *.csv
 *.png
+*.zip
