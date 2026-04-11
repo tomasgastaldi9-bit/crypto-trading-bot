@@ -91,7 +91,7 @@ def run_ensemble_weighted(wrapper, data, top_configs):
     vb_equity = run_vb_strategy(wrapper, data)
     equity_curves.append(vb_equity)
 
-    vb_score = np.mean(scores) * 0.5
+    vb_score = np.mean(scores)
     scores.append(vb_score)
 
     # =========================
@@ -145,9 +145,16 @@ def run_ensemble_weighted(wrapper, data, top_configs):
         if i == len(equity_curves) - 1:
             regime = vb_regime.values[-min_len:]
 
-            rets = np.diff(values, prepend=values[0]) / (values + 1e-8)
+            rets = np.diff(values) / (values[:-1] + 1e-8)
+
+            regime = regime[-len(rets):]  # 🔥 alinear tamaños
+
             rets = rets * regime
-            values = np.cumprod(1 + rets) * values[0]
+
+            values = np.concatenate([
+                [values[0]],
+                np.cumprod(1 + rets) * values[0]
+            ])
 
         aligned_equities.append(values)
 
@@ -293,10 +300,7 @@ def main():
 
     optimizer.report(results)
 
-    top_configs = [
-        r for r in results
-        if r["mean_test"] > 0.45
-    ][:5]
+    top_configs = results[:3]
 
     print(f"\nUsing {len(top_configs)} configs")
 

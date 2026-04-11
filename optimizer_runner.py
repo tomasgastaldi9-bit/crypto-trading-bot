@@ -215,9 +215,9 @@ def main():
         "ts_atr": (2.2, 3.5),
 
         # 🔥 ESTO ES LO QUE TE FALTABA
-        "mr_window": (20, 60),
-        "mr_z": (2.0, 3.5),
-        "mr_rsi": (20, 35),
+        "mr_window": (25, 45),
+        "mr_z": (2.0, 2.8),
+        "mr_rsi": (22, 30),
     }
     # =========================
     # OPTIMIZER

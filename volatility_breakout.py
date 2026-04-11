@@ -9,42 +9,47 @@ class VolatilityBreakoutStrategy:
     def generate_signals(self, df):
         data = df.copy()
 
-        # =========================
-        # VOLATILITY EXPANSION
-        # =========================
         atr = data["atr"]
         atr_ma = atr.rolling(20).mean()
 
-        vol_expansion = atr > atr_ma * 1.5
+        # =========================
+        # 🔥 VOL EXPANSION REAL
+        # =========================
+        vol_expansion = (atr / (atr_ma + 1e-8)) > 1.3
 
         # =========================
-        # BREAKOUT LEVELS
+        # 🔥 TREND FILTER
+        # =========================
+        trend = data["ema_fast"] > data["ema_slow"]
+
+        # =========================
+        # 🔥 BREAKOUT
         # =========================
         high_break = data["high"].rolling(20).max()
-        low_break = data["low"].rolling(20).min()
+
+        breakout = data["close"] > high_break.shift(1)
 
         # =========================
-        # ENTRY
+        # 🔥 MOMENTUM CONFIRMATION
         # =========================
-        data["entry_signal"] = False
-        data["exit_signal"] = False
-
-        data.loc[
-            (data["close"] > high_break.shift(1)) & vol_expansion,
-            "entry_signal"
-        ] = True
-
-        data.loc[
-            (data["close"] < low_break.shift(1)) & vol_expansion,
-            "entry_signal"
-        ] = True
+        momentum = data["rsi"] > 55
 
         # =========================
-        # EXIT (vol collapse)
+        # ENTRY (SOLO LONG)
         # =========================
-        data.loc[
-            atr < atr_ma,
-            "exit_signal"
-        ] = True
+        data["entry_signal"] = (
+            breakout
+            & vol_expansion
+            & trend
+            & momentum
+        )
+
+        # =========================
+        # 🔥 EXIT INTELIGENTE
+        # =========================
+        data["exit_signal"] = (
+            (data["rsi"] < 50)
+            | (data["close"] < data["ema_fast"])
+        )
 
         return data
