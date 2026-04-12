@@ -41,7 +41,6 @@ def combine_equities_return_based(equity_curves, weights):
         returns_list.append(r)
 
     returns_matrix = np.vstack(returns_list)
-
     portfolio_returns = np.sum(weights[:, None] * returns_matrix, axis=0)
 
     equity = 100000 * np.cumprod(1 + portfolio_returns)
@@ -50,7 +49,7 @@ def combine_equities_return_based(equity_curves, weights):
 
 
 # =========================
-# 🔥 PERFORMANCE WEIGHTS
+# PERFORMANCE WEIGHTS
 # =========================
 def compute_performance_weights(equity_curves, lookback=200):
     perf_scores = []
@@ -66,7 +65,6 @@ def compute_performance_weights(equity_curves, lookback=200):
         perf_scores.append(sharpe_like)
 
     perf_scores = np.array(perf_scores)
-
     perf_scores = (perf_scores - perf_scores.mean()) / (perf_scores.std() + 1e-8)
 
     weights = np.exp(perf_scores)
@@ -75,15 +73,16 @@ def compute_performance_weights(equity_curves, lookback=200):
     return weights
 
 
+# =========================
+# VOL TARGETING
+# =========================
 def apply_vol_targeting(equity, target_vol=0.18, window=50):
     returns = equity["equity"].pct_change(fill_method=None).fillna(0)
 
-    # VOL TARGETING
     realized_vol = returns.rolling(window).std()
     vol_scaling = target_vol / (realized_vol + 1e-8)
     vol_scaling = vol_scaling.clip(0.7, 1.8)
 
-    # DRAWDOWN CONTROL
     eq = equity["equity"]
     rolling_max = eq.cummax()
     drawdown = (eq - rolling_max) / (rolling_max + 1e-8)
@@ -91,23 +90,22 @@ def apply_vol_targeting(equity, target_vol=0.18, window=50):
     dd_scaling = 1 + 0.5 * drawdown
     dd_scaling = dd_scaling.clip(0.7, 1.0)
 
-    # VOL REGIME
     vol_long = realized_vol.rolling(100).mean()
     vol_regime = realized_vol / (vol_long + 1e-8)
-
     regime_scaling = np.where(vol_regime > 1.3, 0.85, 1.05)
 
-    # FINAL
     final_scaling = vol_scaling * dd_scaling * regime_scaling
     final_scaling = np.clip(final_scaling, 0.5, 2.0)
 
     scaled_returns = returns * pd.Series(final_scaling, index=returns.index).shift(1).fillna(1)
-
     new_equity = equity["equity"].iloc[0] * np.cumprod(1 + scaled_returns)
 
     return pd.DataFrame({"equity": new_equity})
 
 
+# =========================
+# CORRELATION PENALTY
+# =========================
 def compute_correlation_penalty(aligned_equities):
     returns_list = [
         eq["equity"].pct_change(fill_method=None).fillna(0).values
@@ -115,13 +113,32 @@ def compute_correlation_penalty(aligned_equities):
     ]
 
     returns_matrix = np.vstack(returns_list)
-
     corr_matrix = np.corrcoef(returns_matrix)
 
     penalty = corr_matrix.mean(axis=1)
     penalty = (penalty - penalty.min()) / (penalty.max() - penalty.min() + 1e-8)
 
     return penalty
+
+
+# =========================
+# REGIME FILTER
+# =========================
+def compute_regime_filter(data):
+    price = data["close"]
+
+    ema_fast = price.ewm(span=50).mean()
+    ema_slow = price.ewm(span=200).mean()
+    trend = (ema_fast > ema_slow).astype(int)
+
+    returns = price.pct_change().fillna(0)
+    vol = returns.rolling(50).std()
+    vol_threshold = vol.rolling(200).mean()
+
+    high_vol = (vol > vol_threshold).astype(int)
+
+    regime = trend & high_vol
+    return regime
 
 
 # =========================
@@ -157,10 +174,7 @@ def run_ensemble_weighted(wrapper, data, top_configs):
     print("\n=== RUNNING CONFIGS ===")
 
     for i, config in enumerate(top_configs):
-        print(
-            f"Config {i+1} | Sharpe: {config['mean_test']:.3f} | "
-            f"Std: {config['std_test']:.3f} | Overfit: {config['overfit']:.3f}"
-        )
+        print(f"Config {i+1} | Sharpe: {config['mean_test']:.3f}")
 
         res = wrapper.run(data, config["params"])
         eq = clean_equity(res["equity_curve"])
@@ -176,34 +190,23 @@ def run_ensemble_weighted(wrapper, data, top_configs):
             - 0.2 * turnover
         )
 
-        print(f"Score: {score:.3f} | Turnover: {turnover:.5f}")
         scores.append(score)
 
-    # VB
     print("\n=== RUNNING VB ===")
-    vb_eq = run_strategy(wrapper, data, VolatilityBreakoutStrategy)
-    equity_curves.append(vb_eq)
+    equity_curves.append(run_strategy(wrapper, data, VolatilityBreakoutStrategy))
     scores.append(np.mean(scores))
 
-    # RANGE
     print("\n=== RUNNING RANGE STRATEGY ===")
-    rs_eq = run_strategy(wrapper, data, RangeStrategy)
-    equity_curves.append(rs_eq)
+    equity_curves.append(run_strategy(wrapper, data, RangeStrategy))
     scores.append(np.mean(scores) * 0.5)
 
-    # VOL MR
     print("\n=== RUNNING VOL MR STRATEGY ===")
-    vmr_eq = run_strategy(wrapper, data, VolatilityMeanReversionStrategy)
-    equity_curves.append(vmr_eq)
+    equity_curves.append(run_strategy(wrapper, data, VolatilityMeanReversionStrategy))
     scores.append(np.mean(scores) * 0.05)
 
-    # ALIGN
     min_len = min(len(eq) for eq in equity_curves)
-    aligned = [clean_equity(eq.reset_index(drop=True).iloc[-min_len:]) for eq in equity_curves]
+    aligned = [clean_equity(eq.iloc[-min_len:].reset_index(drop=True)) for eq in equity_curves]
 
-    # =========================
-    # WEIGHTS
-    # =========================
     penalty = compute_correlation_penalty(aligned)
 
     scores = np.array(scores)
@@ -216,34 +219,26 @@ def run_ensemble_weighted(wrapper, data, top_configs):
 
     uniform_w = np.ones_like(softmax_w) / len(softmax_w)
 
-    # 🔥 PERFORMANCE WEIGHTS
-    perf_w = compute_performance_weights(aligned, lookback=200)
-
-    # limitar impacto
+    perf_w = compute_performance_weights(aligned)
     perf_w = np.clip(perf_w, 0.05, 0.5)
-
-    # 🔥 penalizar VOL_MR
     perf_w[-1] *= 0.15
-
-    # renormalizar
     perf_w = perf_w / perf_w.sum()
 
     weights = 0.6 * softmax_w + 0.3 * uniform_w + 0.1 * perf_w
 
-    print("\n=== WEIGHTS (FULL SYSTEM) ===")
-    for i, w in enumerate(weights):
-        if i < len(top_configs):
-            name = f"Config {i+1}"
-        elif i == len(top_configs):
-            name = "VB"
-        elif i == len(top_configs) + 1:
-            name = "RANGE"
-        else:
-            name = "VOL_MR"
-        print(f"{name}: {w:.3f} | Penalty: {penalty[i]:.3f}")
+    print("\n=== WEIGHTS ===")
+    print(weights)
 
     portfolio = combine_equities_return_based(aligned, weights)
     portfolio = apply_vol_targeting(portfolio)
+
+    # 🔥 REGIME FILTER
+    regime = compute_regime_filter(data).iloc[-len(portfolio):].reset_index(drop=True)
+
+    returns = portfolio["equity"].pct_change(fill_method=None).fillna(0)
+    filtered_returns = returns * regime
+
+    portfolio["equity"] = portfolio["equity"].iloc[0] * (1 + filtered_returns).cumprod()
 
     return portfolio
 
@@ -257,11 +252,7 @@ if __name__ == "__main__":
     config = DEFAULT_CONFIG
     data = BinanceDataLoader(config.binance).load_klines()
 
-    print(f"Data loaded: {len(data)} rows")
-
     wrapper = BacktesterWrapper(config)
-
-    print("\n=== LOADING CONFIGS ===")
 
     with open("top_configs.json", "r") as f:
         configs = json.load(f)
@@ -269,14 +260,7 @@ if __name__ == "__main__":
     configs = sorted(configs, key=lambda x: x["mean_test"], reverse=True)
     configs = [c for c in configs if c["overfit"] < 0.8 and c["mean_test"] > 0.3]
 
-    top_configs = configs[:5]
-
-    print(f"Using {len(top_configs)} configs")
-
-    for i, c in enumerate(top_configs):
-        print(f"{i+1} | Sharpe: {c['mean_test']:.3f} | Overfit: {c['overfit']:.3f}")
-
-    print("\n=== RUNNING ENSEMBLE ===")
+    top_configs = configs[:2]
 
     portfolio = run_ensemble_weighted(wrapper, data, top_configs)
 
