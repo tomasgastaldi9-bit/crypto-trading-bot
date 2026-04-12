@@ -19,7 +19,7 @@ class BinanceConfig:
     end_date: str | None = None
     request_limit: int = 1000
     timeout_seconds: int = 30
-    use_cache: bool = True
+    use_cache: bool = False
     cache_dir: Path = field(default_factory=lambda: BASE_DIR / "data_cache")
 
 

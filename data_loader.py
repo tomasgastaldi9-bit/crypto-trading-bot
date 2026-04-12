@@ -114,3 +114,13 @@ class BinanceDataLoader:
     def _to_milliseconds(value: str) -> int:
         timestamp = pd.Timestamp(value, tz="UTC")
         return int(timestamp.timestamp() * 1000)
+    
+    def get_latest_price(self) -> float:
+        url = "https://fapi.binance.com/fapi/v1/ticker/price"
+        params = {"symbol": self.config.symbol}
+
+        response = self.session.get(url, params=params, timeout=self.config.timeout_seconds)
+        response.raise_for_status()
+
+        data = response.json()
+        return float(data["price"])

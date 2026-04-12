@@ -33,7 +33,7 @@ def compute_turnover(eq):
     return np.mean(np.abs(returns))
 
 
-def combine_equities_return_based(equity_curves, weights):
+def combine_equities_return_based(equity_curves, weights, fee=0.0004, slippage=0.0003):
     returns_list = []
 
     for eq in equity_curves:
@@ -41,9 +41,30 @@ def combine_equities_return_based(equity_curves, weights):
         returns_list.append(r)
 
     returns_matrix = np.vstack(returns_list)
+
+    # 🔥 portfolio returns base
     portfolio_returns = np.sum(weights[:, None] * returns_matrix, axis=0)
 
-    equity = 100000 * np.cumprod(1 + portfolio_returns)
+    # =========================
+    # 🔥 TURNOVER COST (CLAVE)
+    # =========================
+    # aproximación: cambio en contribución de cada estrategia
+    weighted_returns = weights[:, None] * returns_matrix
+
+    # turnover proxy
+    turnover = np.sum(np.abs(np.diff(weighted_returns, axis=1)), axis=0)
+
+    # agregar 0 al inicio para alinear
+    turnover = np.insert(turnover, 0, 0)
+
+    # costo total
+    cost_per_trade = fee + slippage
+    costs = turnover * cost_per_trade
+
+    # aplicar costos
+    net_returns = portfolio_returns - costs
+
+    equity = 100000 * np.cumprod(1 + net_returns)
 
     return pd.DataFrame({"equity": equity})
 
@@ -240,7 +261,21 @@ def run_ensemble_weighted(wrapper, data, top_configs):
 
     portfolio["equity"] = portfolio["equity"].iloc[0] * (1 + filtered_returns).cumprod()
 
-    return portfolio
+    # =========================
+    # GENERATE ENSEMBLE SIGNALS
+    # =========================
+    returns = portfolio["equity"].pct_change(fill_method=None).fillna(0)
+
+    # señal base
+    signals = np.sign(returns)
+
+    # evitar ruido (micro movimientos)
+    threshold = returns.rolling(10).std() * 0.5
+    signals = np.where(np.abs(returns) > threshold, signals, 0)
+
+    signals = pd.Series(signals, index=portfolio.index)
+
+    return portfolio, signals
 
 
 # =========================

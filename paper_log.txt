@@ -1,0 +1,78 @@
+🚀 PAPER TRADING BOT STARTED
+
+⏱ 2026-04-11 21:22:02.137708
+Price: 71575.20 | Signal: -1.0
+
+⏱ 2026-04-11 21:27:14.534849
+Price: 71575.20 | Signal: -1.0
+
+⏱ 2026-04-11 21:32:36.823551
+Price: 71575.20 | Signal: -1.0
+
+⏱ 2026-04-11 21:37:59.863589
+Price: 71575.20 | Signal: -1.0
+
+⏱ 2026-04-11 21:43:24.371024
+Price: 71575.20 | Signal: -1.0
+
+⏱ 2026-04-11 21:48:40.709185
+Price: 71575.20 | Signal: -1.0
+
+⏱ 2026-04-11 21:54:00.519365
+Price: 71575.20 | Signal: -1.0
+🚀 PAPER TRADING BOT STARTED
+
+⏱ 2026-04-11 21:56:57.495691
+❌ ERROR: 403 Client Error: Forbidden for url: https://fapi.binance.com/api/v3/ticker/price?symbol=BTCUSDT
+
+⏱ 2026-04-11 21:58:22.251555
+❌ ERROR: 403 Client Error: Forbidden for url: https://fapi.binance.com/api/v3/ticker/price?symbol=BTCUSDT
+
+⏱ 2026-04-11 21:59:58.852466
+🚀 PAPER TRADING BOT STARTED
+
+⏱ 2026-04-11 22:00:21.987280
+Price: 73048.90 | Signal: 0.0
+🚀 PAPER TRADING BOT STARTED
+
+⏱ 2026-04-11 22:10:00.041758
+Price: 73050.80 | Signal: 0.0
+
+⏱ 2026-04-11 22:15:24.543455
+Price: 73033.50 | Signal: 0.0
+
+⏱ 2026-04-11 22:21:02.318738
+Price: 73029.90 | Signal: 0.0
+
+⏱ 2026-04-11 22:26:41.962869
+Price: 72971.20 | Signal: 0.0
+
+⏱ 2026-04-11 22:32:20.594364
+Price: 72968.50 | Signal: 0.0
+
+⏱ 2026-04-11 22:37:58.687950
+Price: 72089.40 | Signal: 0.0
+
+⏱ 2026-04-11 22:43:30.314385
+Price: 71564.20 | Signal: 0.0
+
+⏱ 2026-04-11 22:49:09.486216
+Price: 71350.40 | Signal: 0.0
+
+⏱ 2026-04-11 22:54:40.929867
+Price: 71603.50 | Signal: 0.0
+
+⏱ 2026-04-11 23:00:13.836266
+Price: 71594.80 | Signal: -1.0
+
+⏱ 2026-04-11 23:05:45.549095
+Price: 71458.50 | Signal: -1.0
+
+⏱ 2026-04-11 23:11:24.157293
+Price: 71758.10 | Signal: -1.0
+
+⏱ 2026-04-11 23:17:00.530538
+Price: 71866.80 | Signal: -1.0
+
+⏱ 2026-04-11 23:22:31.222234
+Price: 71758.20 | Signal: -1.0
